@@ -1,0 +1,20 @@
+- hosts: localhost
+  vars:
+      GITLAB_CI_MANAGER: http://localhost
+      REGISTRATION_TOKEN: test
+  tasks:
+    - name: Test registering
+      gitlabci_runner: 
+        command: register
+        url: '{{ GITLAB_CI_MANAGER }}'
+        registration_token: '{{ REGISTRATION_TOKEN }}' 
+        name: 'runner_test'
+        executor: docker
+        docker_image: ubuntu:latest
+        docker_pull_policy: always
+        run_untagged: true
+        locked: false
+      register: result
+      become: true
+
+    - debug: var=result

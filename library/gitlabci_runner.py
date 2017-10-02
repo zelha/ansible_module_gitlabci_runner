@@ -1,15 +1,18 @@
 #!/usr/bin/python
+#-*- coding: utf-8 -*-
 
 from ansible.module_utils.basic import AnsibleModule
 #from ansible.modules.commands import shell
-from subprocess import Popen, call, PIPE, STDOUT
+from subprocess import Popen, call, PIPE, STDOUT, check_output, CalledProcessError
 from distutils import spawn
 import sys
+import shlex
 import uuid
 import re
 import filecmp
 import os
 from sys import stderr
+from ansible.module_utils import shell
 
 #define the available arguments/parameters that user can pass to the module
 # command can be register|unregister
@@ -35,10 +38,11 @@ docker_args = dict(
     docker_pull_policy      = dict(required=False,  type='str', default=''),
     locked                  = dict(required=False,  type='str', default='false'),
     docker_privileged       = dict(required=False,  type='str', default='false'),
-    run_untagged            = dict(required=False,  type='str', default='True'),
+    run_untagged            = dict(required=False,  type='str', default='true'),
     tag_list                = dict(required=False,  type='str', default=''),
     env                     = dict(required=False,  type='str', default=''),
-    config_file             = dict(required=False,  type='str', default='/etc/gitlab-runner/config.toml')
+    runner_token            = dict(required=False,  type='str', default=''),
+    config                  = dict(required=False,  type='str', default='/etc/gitlab-runner/config.toml')
 )
 
 #@todo: adding support of shell and ssh executor
@@ -56,14 +60,18 @@ module = AnsibleModule(
     supports_check_mode=True
 )
 
-
 #extract the config of the existing runner into temp file
 def extract_runner_conf(args):
     try:
         result['message']='extracting config of runner '+args['name']
-        inFile = open(args['config_file'])
-        outFileName = '/tmp/runner' + uuid.uuid4() + '.tmp'
-        outFile = open(outFileName)
+        try:
+            inFile = open(args['config'])
+        except OSError, err:
+            module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
+        
+        outFileName = '/tmp/extracted-' + str(uuid.uuid4()) + '.tmp'
+        result['message']='create file ' + outFileName
+        outFile = open(outFileName,'w')
         matched = False
         for line in inFile:
             if line.startswith("name = \"" + args['name'] + "\""):
@@ -74,63 +82,81 @@ def extract_runner_conf(args):
                 return 0
             elif matched:
                 outFile.write("".join(line))
-    
+
         inFile.close
         outFile.close
         return outFileName
-    except:
-        result['message']="exception in extract_runner_conf"
-        module.fail_json(msg="Unexpected Error in compare_config", **result)
+    except Exception, err:
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
         
 def compare_config(args):
     try:
         result['message']='Comparing config...'
-        configFileBackup = args['config_file']
         
         #check if runner already exist
-        if call( ["gitlab-runner", "verify", "-n " + args['name']] ) == 0:
+        result['message'] = "call gitlab-runner verify"
+        cmdResult = call( ["gitlab-runner", "verify", "-n "+ args['name']], stderr=STDOUT, shell=True)
+        if  cmdResult == 0:
             result['message']='runner ' + args['name'] + ' exist'
+            
             #get the existing token
-            cmd = Popen("gitlab-runner list", shell=True,stdout=PIPE)
-            for line in cmd.stdout:
+            cmdResult = Popen('gitlab-runner list',stdout=PIPE, stderr=PIPE,shell=True)
+            
+            for line in cmdResult.stderr:
                 if args['name'] in line:
                     try:
-                        args['runner_token'] = re.search('.*Token=(.+?) URL=.*$',line).group(1)
+                        result['message']= 'searching for token in: '+line
+                        runner_token = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
                     except AttributeError:
-                        module.fail_json(msg="Can't Found Token of existing runner", **result)
+                        module.fail_json(msg="1:Can't Found Token of existing runner", **result)
             
-            if not args['runner_token']:
-                module.fail_json(msg="Can't Found Token of existing runner", **result)
+            if not runner_token:
+                module.fail_json(msg="2:Can't Found Token of existing runner", **result)
                 
             # Launch Register to create new temp config file
-            args['config_file'] = '/tmp/' + uuid.uuid4() + '.tmp' 
+            args['config'] = '/tmp/runner-' + str(uuid.uuid4()) + '.tmp'
+            open(args['config'], 'a').close()
+            
+            args['runner_token'] = runner_token
             runner_register(args)
             
             # extract config from config file
-            nFile = extract_runner_conf(args)
-            
+            try:
+                nFile = extract_runner_conf(args)
+            except OSError, err:
+                module.fail_json(msg="File not found in extract_runner" + args['config'])
             # and compare with temp config file
-            compareResult = filecmp.cmp(nFile,args['config_file'])
+            try:
+                compareResult = filecmp.cmp(nFile,args['config'])
+            except OSError, err:
+                module.fail_json(msg="File not found in filecmp" + args['config'])
             
+            
+            runner_unregister(args)
+            module.fail_json(msg='compare should work'+compareResult)
+                             
             # if not identical unregister the old one
             if compareResult == False:
+                result['message']='Compare found difference'
                 runner_unregister(args)
                 args['changed'] = True
             else: # do nothing
                 args['changed'] = False
             
-            # clean tmp file
-            os.remove(args['tmp_file'])
+            # clean tmp files
+            os.remove(nFile)
+            os.remove(args['config'])
             # 
-            args['config_file'] = configFileBackup
-            return args['changed']
+            return True
         else:
             result['message']='runner '+ args['name'] + " doesn't exist"
-            runner_register(args)
-            
+            module.fail_json(msg="Doesn't entered in compare", **result)
+            try:
+                runner_register(args)
+            except OSError, err:
+                module.fail_json(msg="File not found in runner_register" + args['config'])
     except Exception, err:
-        result['message']= "Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno)
-        module.fail_json(msg="Unexpected Error in compare_config", **result)
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
 
 # calling the right registerer depending of executor value
 def runner_register(args):
@@ -144,30 +170,38 @@ def runner_register(args):
         runner_register_ssh(args)
 
 def runner_register_docker(args):
-    cmdArgs = ['gitlab-runner','register','--non-interactive']
-    cmdArgs.append('--url '+args['url'])
-    cmdArgs.append('--executor '+args['executor'])
-    cmdArgs.append('--registration-token '+args['registration_token'])
-    cmdArgs.append('--name '+args['name'])
-    cmdArgs.append('--docker-image '+args['docker_image'])
-    cmdArgs.append('--docker-pull-policy '+args['docker_pull_policy'])
-    cmdArgs.append('--run-untagged '+args['run_untagged'])
-    cmdArgs.append('--tag-list '+args['tag_list'])
-    cmdArgs.append('--locked '+args['locked'])
-    cmdArgs.append('--docker-privileged '+args['docker_privileged'])
-    if args['env']: cmdArgs.append('--env '+args['env'])
+    try:
+        cmdArgs = ['gitlab-runner','register','--non-interactive','--url '+args['url'],
+                   '--registration-token '+args['registration_token'],'--executor docker',
+                   '--docker-image '+args['docker_image'],'--name '+args['name']]
+        for key, value in docker_args.iteritems():
+            # dont take url and registration token because the command line doesn't like when it don't come first
+            if args[key]!='' and key != 'url' and key != 'registration_token' and key != 'docker_image' and key != 'name':
+                # except for oneword arg which doesn't wait for value
+                if key == 'docker_privileged' and key == 'locked' and key == 'leave_runner':
+                     if args[key] == True:
+                         cmdArg = '--' + key.replace('_','-')
+                else:
+                    cmdArg = '--' + key.replace('_','-') + ' '+ args[key]
     
-    result['message']='COMMAND:' + ' '.join(cmdArgs)
-    #cmdResult = subprocess.check_output(cmdArgs, stderr=subprocess.STDOUT, shell=True,universal_newlines=True)
-    cmdResult = Popen(' '.join(cmdArgs), shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-
-    if cmdResult==0:
-        result['changed']=True
-    else:
-        stdout,stderr = cmdResult.communicate()
-        module.fail_json(msg=stderr, **result)   
-    
-    
+                cmdArgs.append(cmdArg)
+        
+        
+        result['message']=' '.join(cmdArgs)
+        cmdResult = Popen(' '.join(cmdArgs), shell=True, stdin=PIPE,stdout=PIPE, stderr=PIPE)
+        out, err = cmdResult.communicate()
+        
+        if cmdResult.returncode == 0:
+            result['changed']=True
+            result['message']='runner '+ args['name'] + ' registered'
+            return True
+        else:
+            result['message']=' '.join(cmdArgs)+"\r\n"+out
+            module.fail_json(msg=err, **result)
+        
+        return False 
+    except Exception, err:
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
     
 def runner_register_shell(args):
     module.fail_json(msg="Not yet Implemented", **result)
@@ -179,40 +213,37 @@ def runner_register_ssh(args):
 
 def runner_unregister(args):
     cmdArgs = []
-    if args['token']:
-        cmdArgs.append("-t " + args['token'])
+    if args['runner_token']:
+        cmdArgs.append("-t " + args['runner_token'])
     if args['name']:
         cmdArgs.append("-n " + args['name'])
-    if args['manager_url']:
-        cmdArgs.append("-u " + args['manager_url'])
-    if args['all_runners']:
-        cmdArgs.append("--all-runners")
-
-    call("gitlab-runner unregister " + ' '.join(cmdArgs))
+    if args['url']:
+        cmdArgs.append("-u " + args['url'])
+    #if args['all_runners']:
+    #    cmdArgs.append("--all-runners")
+    result['message']='execute: gitlab-runner unregister ' + ' '.join(cmdArgs)
+    try:
+        call("gitlab-runner unregister " + ' '.join(cmdArgs))
+    except Exception, err:
+        module.fail_json(msg=err,**result)
 
 def run_module():
-    try:
-        if not spawn.find_executable("gitlab-runner"):
-            module.fail_json(msg="gitlab-runner not found: is it installed or in path?")
-                                 
-        #delete all runner which no more exist on gitlab manager
-        call(["gitlab-runner","verify","--delete"])
-        
-        if module.params['command'] == "register":
-            if compare_config(module.params) == True:
-                if runner_register(module.params) == True:
-                    result['changed']='has_changed'
-            else:
-                result['changed'] = False
-        elif module.params['command'] == 'unregister':
-            runner_unregister(module.params)
-        
-        module.exit_json(**result)
-    except Exception, err:
-        result['message']= "Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno)
-        module.fail_json(msg="Unexpected Error", **result)
-        
-        
+    if not spawn.find_executable("gitlab-runner"):
+        module.fail_json(msg="gitlab-runner not found: is it installed or in path?")
+                             
+    #delete all runner which no more exist on gitlab manager
+    call(["gitlab-runner","verify","--delete"])
+    
+    if module.params['command'] == "register":
+        if compare_config(module.params) == True:
+            if runner_register(module.params) == True:
+                result['changed']='has_changed'
+        else:
+            result['changed'] = False
+    elif module.params['command'] == 'unregister':
+        runner_unregister(module.params)
+    
+    module.exit_json(**result)
 
 def main():
     run_module()

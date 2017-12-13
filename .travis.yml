@@ -1,0 +1,26 @@
+---
+dist: trusty
+language: python
+python: "2.7"
+
+before_install:
+  - sudo apt-get update -qq
+
+install:
+  # Install Ansible.
+  - pip install ansible
+  #install gitlab-runner
+  - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
+
+script:
+  #check syntax of playbook
+  ansible-playbook -i tests/inventory tests/test.yml --syntax-check
+  #execute for first time check the runner was added
+  ansible-playbook -vvv play.yml 
+  grep 'runner_test' /etc/gitlab-runner/config.toml
+  #make sure it's idempotent
+  - >
+    ansible-playbook -vvv play.yml 
+    | grep -q 'changed=0.*failed=0'
+    && (echo 'Idempotence test: pass' && exit 0)
+    || (echo 'Idempotence test: fail' && exit 1)

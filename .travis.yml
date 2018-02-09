@@ -11,13 +11,9 @@ install:
   - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
 script:
   #check syntax of playbook
-  ansible-playbook -i tests/inventory tests/test.yml --syntax-check
+  - ansible-playbook -i tests/inventory tests/test.yml --syntax-check
   #execute for first time check the runner was added
-  ansible-playbook -vvv play.yml 
-  grep 'runner_test' /etc/gitlab-runner/config.toml
+  - ansible-playbook -vvv play.yml 
+  - grep 'runner_test' /etc/gitlab-runner/config.toml
   #make sure it's idempotent
-  - >
-    ansible-playbook -vvv play.yml 
-    | grep -q 'changed=0.*failed=0'
-    && (echo 'Idempotence test: pass' && exit 0)
-    || (echo 'Idempotence test: fail' && exit 1)
+  - ansible-playbook -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)

@@ -1,15 +1,15 @@
 dist: trusty
-sudo: required
+sudo: false
 language: python
 python: 
-  - "2.7"
+    - "2.7"
 before_install:
-  - sudo apt-get update -qq
+    - apt-get update -qq
 install:
-  - pip install ansible
-  - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
+    - pip install ansible
+    - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
 script:
-  - ansible-playbook -i tests/inventory tests/test.yml --syntax-check
-  - ansible-playbook -vvv play.yml 
-  - grep 'runner_test' /etc/gitlab-runner/config.toml
-  - ansible-playbook -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)
+    - ansible-playbook -i tests/inventory tests/test.yml --syntax-check
+    - ansible-playbook -vvv play.yml 
+    - grep 'runner_test' /etc/gitlab-runner/config.toml
+    - ansible-playbook -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)

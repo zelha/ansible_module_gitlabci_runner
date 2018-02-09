@@ -4,7 +4,7 @@ language: python
 python: 
     - "2.7"
 before_install:
-    - apt-get update -qq
+    - sudo apt-get update -qq
 install:
     - pip install ansible
     - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash

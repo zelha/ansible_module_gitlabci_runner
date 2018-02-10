@@ -3,7 +3,7 @@
       GITLAB_CI_MANAGER: http://localhost
       REGISTRATION_TOKEN: test
   tasks:
-    - name: Test registering
+    - name: "Test registering"
       gitlabci_runner: 
         command: register
         url: '{{ GITLAB_CI_MANAGER }}'

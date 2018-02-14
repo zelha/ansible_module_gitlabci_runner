@@ -2,18 +2,10 @@
 #-*- coding: utf-8 -*-
 
 from ansible.module_utils.basic import AnsibleModule
-#from ansible.modules.commands import shell
+from sys import stderr
 from subprocess import Popen, call, PIPE, STDOUT, check_output, CalledProcessError
 from distutils import spawn
-import sys
-import shlex
-import uuid
-import re
-import filecmp
-import os
-from sys import stderr
-from ansible.module_utils import shell
-import subprocess
+import sys, shlex, uuid, re, filecmp, os, subprocess
 
 #define the available arguments/parameters that user can pass to the module
 # command can be register|unregister

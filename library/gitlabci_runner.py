@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #-*- coding: utf-8 -*-
 
 from ansible.module_utils.basic import AnsibleModule
@@ -29,14 +29,17 @@ docker_args = dict(
     registration_token      = dict(required=True,   type='str'),
     limit                   = dict(required=False,  type='str', default='0'),
     docker_pull_policy      = dict(required=False,  type='str', default=''),
-    locked                  = dict(required=False,  type='str', default='false'),
-    docker_privileged       = dict(required=False,  type='str', default='false'),
-    run_untagged            = dict(required=False,  type='str', default='true'),
+    locked                  = dict(required=False,  type='bool', default=False),
+    docker_privileged       = dict(required=False,  type='bool', default=False),
+    run_untagged            = dict(required=False,  type='bool', default=True),
+    leave_runner            = dict(required=False,  type='bool', default=False),
     tag_list                = dict(required=False,  type='str', default=''),
     env                     = dict(required=False,  type='str', default=''),
     token                   = dict(required=False,  type='str', default=''),
     config                  = dict(required=False,  type='str', default='/etc/gitlab-runner/config.toml')
 )
+
+
 
 #@todo: adding support of shell and ssh executor
 
@@ -88,9 +91,9 @@ def compare_config(args):
     try:
         #check if runner already exist
         rc, out, err = module.run_command('gitlab-runner verify -n '+ args['name'])
-         
+        
+        # if it exist then create a temp file to compare
         if rc == 0:
-            
             #get the existing token
             cmdResult = Popen('gitlab-runner list',shell=True, stdout=PIPE, stderr=PIPE)
             cmdOut, cmdErr = cmdResult.communicate()
@@ -108,9 +111,18 @@ def compare_config(args):
             
             # Launch Register to create new temp config file
             args['config'] = '/tmp/runner-' + str(uuid.uuid4()) + '.tmp'
+            args['url'] = 'localhost'
+            leaverunner = True
             open(args['config'], 'a').close() # touch
             
             tmpToken = runner_register(args)
+            #we delete global line not concerning the runner
+            import fileinput
+            for line in fileinput.input(args['config'],inplace =1):
+                line = line.strip()
+                if not 'concurrent =' in line and not 'check_interval =' in line :
+                    print line
+
             #we unregister immediatly the new runner created for the test
             tmpArgs = args
             tmpArgs['token'] = tmpToken
@@ -119,15 +131,14 @@ def compare_config(args):
             # and compare the two files with each other
             compareResult = filecmp.cmp(nFile,args['config'])
             
+            # Error at comparing file
             if compareResult == False:
-                result['message']='diff -y '+nFile+' '+ args['config']
-                module.fail_json(msg="Compare failed: " + out, **result)
+                result['message']='Difference detected in: diff -yBw '+nFile+' '+ args['config']
+                return True
             else:
                 result['message'] = 'Config is identical, no need to register or update'
-                module.exit_json(**result)
-                
-            
-            
+                return False
+
                              
             # if not identical unregister the old one
             if compareResult == False:
@@ -141,15 +152,11 @@ def compare_config(args):
             os.remove(nFile)
             os.remove(args['config'])
             # 
+            leaverunner = FALSE
             return True
         else:
-            result['message']='gitlab-runner verify -n '+ args['name'] + "\r\n" + str(rc) + ':' + out + ' ! '+ err
-            module.fail_json('should detect existing runner and compare config')
-            result['message']='runner '+ args['name'] + " doesn't exist"
-            try:
-                runner_register(args)
-            except OSError, err:
-                module.fail_json(msg="File not found in runner_register" + args['config'])
+            # the runner is not already in config, then yes, there is difference
+            return True
     except Exception, err:
         module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
 
@@ -158,71 +165,63 @@ def runner_register(args):
     if args['executor'] == 'docker':
         return runner_register_docker(args)
     elif args['executor'] == 'docker+machine' or args['executor'] == 'docker-ssh' or args['executor'] == 'docker-ssh+machine':
-        module.fail_json(msg='ERROR' + args['executor'] + ' is Deprecated',**result)
+        module.fail_json(msg='ERROR: ' + args['executor'] + ' is Deprecated',**result)
     elif args['executor'] == 'shell':
         return runner_register_shell(args)
     elif args['executor'] == 'ssh':
         return runner_register_ssh(args)
+    else:
+        module.fail_json(msg='ERROR: ' + args['executor'] + ' is not recognized',**result)
+
+def getRunnerToken(name):
+    cmdResult = Popen('gitlab-runner list',shell=True, stdout=PIPE, stderr=PIPE)
+    cmdOut, cmdErr = cmdResult.communicate()
+
+    for line in cmdErr.splitlines():
+        matched = re.match(name, line)
+        if matched:
+            token = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
+
+    if not token:
+        module.fail_json(msg="Can't Found Token of existing runner in"+str(u), **result)
+    return token
 
 def runner_register_docker(args):
-    #backup the config.toml because of this bug : https://gitlab.com/gitlab-org/gitlab-runner/issues/2811
-    if args['config'] != '/etc/gitlab-runner/config.toml':
-        
-        module.atomic_move('/etc/gitlab-runner/config.toml', '/tmp/gitlab-runner-config.toml', False)
-        
     try:
-        cmdArgs = ['gitlab-runner','register','--non-interactive','--url '+args['url'],
+        options = '--non-interactive'
+
+        cmdArgs = ['gitlab-runner','register',options,'--url '+args['url'],
                    '--registration-token '+args['registration_token'],'--executor docker',
                    '--docker-image '+args['docker_image'],'--name '+args['name']]
+        
         for key, value in docker_args.iteritems():
             # dont take url and registration token because the command line doesn't like when it don't come first
             if args[key]!='' and key != 'url' and key != 'registration_token' and key != 'docker_image' and key != 'name':
-                # except for oneword arg which doesn't wait for value
-                if key == 'docker_privileged' and key == 'locked' and key == 'leave_runner':
+                # except for oneword arg which need '=' sign before value
+                if value['type']=='bool':
                      if args[key] == True:
-                         cmdArg = '--' + key.replace('_','-')
+                         cmdArg = '--' + key.replace('_','-')+'='+str(args[key])
                 else:
-                    cmdArg = '--' + key.replace('_','-') + ' '+ args[key]
+                    cmdArg = '--' + key.replace('_','-') + ' '+ str(args[key])
     
                 cmdArgs.append(cmdArg)
-        
-        
-        rc, out, err = module.runcommand(' '.join(cmdArgs))
-        
-        if rc == 0 and args['config'] == '/etc/gitlab-runner/config.toml':
-            result['changed']=True
-            result['message']='runner '+ args['name'] + ' registered'
-        elif args['config'] != '/etc/gitlab-runner/config.toml':
-            result['message']=' '.join(cmdArgs)+"\r\n"+out
-            module.fail_json(msg=err, **result)
-        else: # if we are in compare config mode extract runner token to unregister immediatly after
-            rc, out, err = module.runcommand("sed -nr 's/token = \"(.*)\"/\1/p' /etc/gitlab-runner/config.toml")
-            if rc == 0:
-                extractRunnerToken = out
-        
-        if args['config'] != '/etc/gitlab-runner/config.toml':
-            #move the new config.toml to the file wanted in command (cause of #2811 too)
-            module.atomic_move('/etc/gitlab-runner/config.toml', args['config'])
-            
-            #replace the new token generated by the correct token wanted in runner argument see bug : #?
-            if args['token']!='':
-                module.run_command('sed -i /concurrent.*/d ' + args['config'])
-                module.run_command('sed -i /check_interval.*/d ' + args['config'])
-                module.run_command('sed -i /^$/d ' + args['config'])
-                rc, out, err = module.run_command("sed -i -e 's|token.*|token = \"" + args['token'] + "\"|' " + args['config'])
-                if rc > 0:
-                    result['message'] = 'sed -i -e ' + regex + args['config'] + " failed"
-                    module.fail_json(msg=err,**result)
-            #and restore backup
-            module.atomic_move('/tmp/gitlab-runner-config.toml', '/etc/gitlab-runner/config.toml', False)
-            if extractRunnerToken:
-                return extractRunnerToken
-            
+
+        rc, out, err = module.run_command(' '.join(cmdArgs))
+
+        if rc == 0:
+            runnerName = args['name']
+            result['changed']= True
+            result['message']='runner '+ runnerName + ' registered'
+            tokenId = getRunnerToken( runnerName )
+            return tokenId
+        else: 
+            result['changed']= False
+            result['message'] = "Error can't reach remote gitlab for registering"
+            module.fail_json(msg=err,**result)
+            return False
     except Exception, err:
-        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
-        #restore backup
-        if args['config'] != '/etc/gitlab-runner/config.toml':
-            module.atomic_move('/etc/gitlab-runner/config.toml', '/tmp/gitlab-runner-config.toml', False)
+        result['original_message'] = "Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno)
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno),**result)
     
 def runner_register_shell(args):
     module.fail_json(msg="Not yet Implemented", **result)
@@ -235,14 +234,12 @@ def runner_register_ssh(args):
 def runner_unregister(args):
     cmdArgs = []
     if args['token']:
-        cmdArgs.append("-t " + args['token'])
-    #elif because there is a bug in gitlab-runner see https://gitlab.com/gitlab-org/gitlab-runner/issues/2813
+        cmdArgs.append("-t " + str(args['token']))
     elif args['name']:
         cmdArgs.append("-n " + args['name'])
     if args['url']:
         cmdArgs.append("-u " + args['url'])
-    #if args['all_runners']:
-    #    cmdArgs.append("--all-runners")
+
     result['message']='execute: gitlab-runner unregister ' + ' '.join(cmdArgs)
     try:
         cmdResult = Popen("gitlab-runner unregister " + ' '.join(cmdArgs), shell=True)
@@ -257,11 +254,16 @@ def run_module():
     call(["gitlab-runner","verify","--delete"])
     
     if module.params['command'] == "register":
+        #check if there is difference
         if compare_config(module.params) == True:
             if runner_register(module.params) == True:
-                result['changed']='has_changed'
+                result['changed']= True
+            else:
+                result['changed'] = False
+        #else doing nothing
         else:
             result['changed'] = False
+            result['message']= "No differences detected, nothing to do"
     elif module.params['command'] == 'unregister':
         runner_unregister(module.params)
     

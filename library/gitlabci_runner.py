@@ -99,11 +99,12 @@ def compare_config(args):
             cmdOut, cmdErr = cmdResult.communicate()
 
             for line in cmdErr.splitlines():
-                matched = re.match(args['name'], line)
+                formatedMatch = re.escape(args['name'])
+                matched = re.match(formatedMatch, line)
                 if matched:
                     args['token'] = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
 
-            if not args['token']:
+            if not 'token' in args or not args['token']:
                 module.fail_json(msg="Can't Found Token of existing runner in"+str(u), **result)
             
             # extract config from config file

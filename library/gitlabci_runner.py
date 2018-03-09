@@ -23,14 +23,15 @@ module_args = dict(
 #--docker-allowed-images,--docker-allowed-services,--docker-shm-size "0",--docker-tmpfs "{}",--docker-services-tmpfs "{}",
 #--docker-sysctls "{}"
 docker_args = dict(
-    url                     = dict(required=True,   type='str'),
     docker_image            = dict(required=True,   type='str'),
+    docker_pull_policy      = dict(required=False,  type='str', default=''),
+    docker_privileged       = dict(required=False,  type='bool', default=False),
+    docker_volumes          = dict(required=False,  type='str', default=''),
+    url                     = dict(required=True,   type='str'),
     name                    = dict(required=True,   type='str'),
     registration_token      = dict(required=True,   type='str'),
     limit                   = dict(required=False,  type='str', default='0'),
-    docker_pull_policy      = dict(required=False,  type='str', default=''),
-    locked                  = dict(required=False,  type='bool', default=False),
-    docker_privileged       = dict(required=False,  type='bool', default=False),
+    locked                  = dict(required=False,  type='bool', default=True),
     run_untagged            = dict(required=False,  type='bool', default=True),
     leave_runner            = dict(required=False,  type='bool', default=False),
     tag_list                = dict(required=False,  type='str', default=''),
@@ -39,7 +40,13 @@ docker_args = dict(
     config                  = dict(required=False,  type='str', default='/etc/gitlab-runner/config.toml')
 )
 
-
+ssh_args = dict(
+    ssh_user                = dict(required=False,type=''),
+    ssh_password            = dict(required=False,type=''),
+    ssh_host                = dict(required=True,type=''),
+    ssh_port                = dict(required=False,type=''),
+    ssh_identity_file       = dict(required=False,type='')
+)
 
 #@todo: adding support of shell and ssh executor
 
@@ -65,13 +72,16 @@ def extract_runner_conf(args):
         outFile = open(outFileName,'w')
         
         matched = False
+        processed = False
         u = []
         for line in inFile:
             u.append(line)
-            if re.match('.*'+args['name'], line):
+            formatedMatch = re.escape(args['name'])
+            if re.match('.*'+formatedMatch, line):
                 matched = True
                 outFile.write("[[runners]]\n")
                 outFile.write("".join(line))
+                processed = True
             elif line.startswith("\n"):
                 matched = False
             elif matched:
@@ -80,7 +90,7 @@ def extract_runner_conf(args):
         inFile.close
         outFile.close
         
-        if not matched:
+        if not processed:
             module.fail_json(msg="cannot found "+args['name']+' section in '+args['config'], **result)
         return outFileName
     except Exception, err:
@@ -99,24 +109,25 @@ def compare_config(args):
             cmdOut, cmdErr = cmdResult.communicate()
 
             for line in cmdErr.splitlines():
-                formatedMatch = re.escape(args['name'])
-                matched = re.match(formatedMatch, line)
+                formattedMatch = re.escape(args['name'])
+                matched = re.match(formattedMatch, line)
                 if matched:
                     args['token'] = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
+                    break
 
             if not 'token' in args or not args['token']:
-                module.fail_json(msg="Can't Found Token of existing runner in"+str(u), **result)
+                module.fail_json(msg="compare_config: Can't Found Token of existing runner "+args['name'], **result)
             
             # extract config from config file
             nFile = extract_runner_conf(args)
             
             # Launch Register to create new temp config file
             args['config'] = '/tmp/runner-' + str(uuid.uuid4()) + '.tmp'
-            args['url'] = 'localhost'
-            leaverunner = True
+            args['url']='http://localhost'
+            args['leave_runner'] = True
             open(args['config'], 'a').close() # touch
             
-            tmpToken = runner_register(args)
+            tmpToken = runner_register(args, args['config'])
             #we delete global line not concerning the runner
             import fileinput
             for line in fileinput.input(args['config'],inplace =1):
@@ -152,8 +163,6 @@ def compare_config(args):
             # clean tmp files
             os.remove(nFile)
             os.remove(args['config'])
-            # 
-            leaverunner = FALSE
             return True
         else:
             # the runner is not already in config, then yes, there is difference
@@ -162,32 +171,31 @@ def compare_config(args):
         module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
 
 # calling the right registerer depending of executor value
-def runner_register(args):
+def runner_register(args,configFile='/etc/gitlab-runner/config.toml'):
     if args['executor'] == 'docker':
-        return runner_register_docker(args)
+        return runner_register_docker(args,configFile)
     elif args['executor'] == 'docker+machine' or args['executor'] == 'docker-ssh' or args['executor'] == 'docker-ssh+machine':
         module.fail_json(msg='ERROR: ' + args['executor'] + ' is Deprecated',**result)
     elif args['executor'] == 'shell':
-        return runner_register_shell(args)
+        return runner_register_shell(args,configFile)
     elif args['executor'] == 'ssh':
-        return runner_register_ssh(args)
+        return runner_register_ssh(args,configFile)
     else:
         module.fail_json(msg='ERROR: ' + args['executor'] + ' is not recognized',**result)
 
-def getRunnerToken(name):
-    cmdResult = Popen('gitlab-runner list',shell=True, stdout=PIPE, stderr=PIPE)
+def getRunnerToken(name, configFile):
+    cmdResult = Popen('gitlab-runner list -c "'+configFile+'"',shell=True, stdout=PIPE, stderr=PIPE)
     cmdOut, cmdErr = cmdResult.communicate()
 
     for line in cmdErr.splitlines():
-        matched = re.match(name, line)
+        formatedMatch = re.escape(name)
+        matched = re.match(formatedMatch, line)
         if matched:
             token = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
+            return token
+    return False
 
-    if not token:
-        module.fail_json(msg="Can't Found Token of existing runner in"+str(u), **result)
-    return token
-
-def runner_register_docker(args):
+def runner_register_docker(args, configFile='/etc/gitlab-runner/config.toml'):
     try:
         options = '--non-interactive'
 
@@ -200,8 +208,10 @@ def runner_register_docker(args):
             if args[key]!='' and key != 'url' and key != 'registration_token' and key != 'docker_image' and key != 'name':
                 # except for oneword arg which need '=' sign before value
                 if value['type']=='bool':
-                     if args[key] == True:
-                         cmdArg = '--' + key.replace('_','-')+'='+str(args[key])
+                    if args[key] == True:
+                        cmdArg = '--' + key.replace('_','-')+'=true'
+                    else:
+                        cmdArg = '--' + key.replace('_','-')+'=false'
                 else:
                     cmdArg = '--' + key.replace('_','-') + ' '+ str(args[key])
     
@@ -209,17 +219,15 @@ def runner_register_docker(args):
 
         rc, out, err = module.run_command(' '.join(cmdArgs))
 
-        if rc == 0:
-            runnerName = args['name']
-            result['changed']= True
-            result['message']='runner '+ runnerName + ' registered'
-            tokenId = getRunnerToken( runnerName )
+
+        result['changed']= True
+        result['message']='runner '+ args['name'] + ' registered'
+        tokenId = getRunnerToken( args['name'], configFile)
+        if tokenId:
             return tokenId
-        else: 
-            result['changed']= False
-            result['message'] = "Error can't reach remote gitlab for registering"
-            module.fail_json(msg=err,**result)
+        else:
             return False
+        
     except Exception, err:
         result['original_message'] = "Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno)
         module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno),**result)

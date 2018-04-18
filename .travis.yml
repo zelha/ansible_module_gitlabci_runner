@@ -13,5 +13,5 @@ install:
 script:
     - ansible-playbook play.yml --syntax-check
     - ansible-playbook -vvv play.yml 
-    - grep 'runner_test' /etc/gitlab-runner/config.toml
+    - sudo grep 'runner_test' /etc/gitlab-runner/config.toml
     - "ansible-playbook -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)"

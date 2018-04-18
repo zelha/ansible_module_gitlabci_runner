@@ -6,14 +6,19 @@
     - name: "Test registering"
       gitlabci_runner: 
         command: register
+        executor: docker
         url: '{{ GITLAB_CI_MANAGER }}'
         registration_token: '{{ REGISTRATION_TOKEN }}' 
         name: 'runner_test'
-        executor: docker
         docker_image: ubuntu:latest
         docker_pull_policy: always
         run_untagged: true
         locked: false
+        docker_privileged: false
+        tag_list: "test,ubuntu"
+        limit: 5
+        env: "PATH=$PATH:/usr/bin"
+        docker_volumes: "/opt/example:/opt/example:ro, /var/log:/var/log"
       register: result
       become: true
 

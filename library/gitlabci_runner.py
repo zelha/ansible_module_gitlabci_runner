@@ -217,15 +217,23 @@ def runner_register_docker(args, configFile='/etc/gitlab-runner/config.toml'):
     
                 cmdArgs.append(cmdArg)
 
-        rc, out, err = module.run_command(' '.join(cmdArgs))
-
-
-        result['changed']= True
-        result['message']='runner '+ args['name'] + ' registered'
-        tokenId = getRunnerToken( args['name'], configFile)
-        if tokenId:
-            return tokenId
+        if not module.check_mode:
+            rc, out, err = module.run_command(' '.join(cmdArgs))
         else:
+            result['msg']='msg:Execute Command:'+' '.join(cmdArgs)
+            result['message']='m:Execute Command:'+' '.join(cmdArgs)
+            result['original_message']='om: Execute Command:'+' '.join(cmdArgs)
+
+        if not module.check_mode:
+            result['changed']= True
+            result['message']='runner '+ args['name'] + ' registered'
+            tokenId = getRunnerToken( args['name'], configFile)
+            if tokenId:
+                return tokenId
+            else:
+                return False
+        else:
+            result['changed']= False
             return False
         
     except Exception, err:

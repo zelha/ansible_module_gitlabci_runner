@@ -15,5 +15,5 @@ script:
     - ansible-playbook -i ./hosts play.yml --syntax-check
     - ansible-playbook -i ./hosts -vvv play.yml 
     - sudo grep 'runner_test' /etc/gitlab-runner/config.toml
-    - if [ "$?" ==1 ]; then sudo cat /etc/gitlab-runner/config.toml; fi
+    - if [ "$?" == "1" ]; then sudo cat /etc/gitlab-runner/config.toml; fi
     - "ansible-playbook -i ./hosts -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)"

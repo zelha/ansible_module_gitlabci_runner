@@ -10,8 +10,9 @@ install:
     - curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
     - sudo apt-get install gitlab-runner
     - export ANSIBLE_LIBRARY="$ANSIBLE_LIBRARY:./library"
+    - echo "[local]\r\nlocalhost ansible_connection=local" > hosts
 script:
     - ansible-playbook play.yml --syntax-check
     - ansible-playbook -vvv play.yml 
     - sudo grep 'runner_test' /etc/gitlab-runner/config.toml
-    - "ansible-playbook -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)"
+    - "ansible-playbook -i ./hosts -vvv play.yml | grep -q 'changed=0.*failed=0' && (echo 'Idempotence test: pass' && exit 0) || (echo 'Idempotence test: fail' && exit 1)"

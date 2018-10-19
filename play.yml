@@ -19,6 +19,7 @@
         limit: 5
         env: "PATH=$PATH:/usr/bin"
         docker_volumes: "/opt/example:/opt/example:ro, /var/log:/var/log"
+        leave_runner: true
       register: result
       become: true
 

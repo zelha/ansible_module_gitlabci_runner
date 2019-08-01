@@ -4,7 +4,7 @@
       REGISTRATION_TOKEN: test
   tasks:
     - name: "Test registering"
-      gitlabci_runner: 
+      gitlabci_runner:
         command: register
         executor: docker
         url: '{{ GITLAB_CI_MANAGER }}'
@@ -22,5 +22,10 @@
         leave_runner: true
       register: result
       become: true
+    - name: "Test registering"
+        gitlabci_runner:
+          command: listen_address
+          address: 0.0.0.0
+          port: 9100
 
     - debug: var=result

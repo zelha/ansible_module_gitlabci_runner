@@ -12,7 +12,8 @@ import sys, shlex, uuid, re, filecmp, os, subprocess
 # executor can be docker|ssh|shell
 module_args = dict(
     command                 = dict(required=True,   type='str'), 
-    executor                = dict(required=True,   type='str')
+    executor                = dict(required=True,   type='str'),
+    listen_address          = dict(required=False,  type='str', default="0.0.0.0:9100")
 )
 #@todo: add support for docker options 
 #--limit "0",--output-limit "0",--request-concurrency "0",--tls-ca-file,--tls-cert-file,--tls-key-file,--builds-dir
@@ -39,6 +40,10 @@ docker_args = dict(
     token                   = dict(required=False,  type='str', default=''),
     config                  = dict(required=False,  type='str', default='/etc/gitlab-runner/config.toml')
 )
+global_args = dict(
+    address                 = dict(required=False, type= 'str', default=''),
+    port                    = dict(required=False, type= 'str', default='9100')
+)
 
 ssh_args = dict(
     ssh_user                = dict(required=False,type=''),
@@ -57,6 +62,7 @@ result = dict(
 )
 
 module_args.update(docker_args)
+module_args.update(global_args)
 
 module = AnsibleModule(
     argument_spec=module_args,
@@ -67,7 +73,7 @@ module = AnsibleModule(
 def extract_runner_conf(args):
     try:
         inFile = open(args['config'])
-        
+
         outFileName = '/tmp/extracted-' + str(uuid.uuid4()) + '.tmp'
         outFile = open(outFileName,'w')
         
@@ -77,6 +83,8 @@ def extract_runner_conf(args):
         for line in inFile:
             u.append(line)
             formatedMatch = re.escape(args['name'])
+#            if re.match('listen_address = \"([0-9,\.]*:[0-9]{4})\"'):
+#                outFile.write("".join(line))
             if re.match('.*'+formatedMatch, line):
                 matched = True
                 outFile.write("[[runners]]\n")
@@ -95,6 +103,30 @@ def extract_runner_conf(args):
         return outFileName
     except Exception, err:
         module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
+
+
+#compare listen address between old config and the new
+def compare_listen_adress_config(args):
+    try:
+        #if listen_address is not specified listen address will stay an empty string
+        listen_address_old_config = ''
+        inFile = open(args['config'])
+        m = re.search('listen_address = \"([0-9,\.]*:[0-9]{4})\"', inFile ,re.MULTILINE)
+        expectedListenAddress = writeOutListenAddress(args['address'], args['port'])
+        if m :
+            listen_address_old_config = m.group(0)
+        compareResult = (listen_address_old_config == expectedListenAddress)
+
+        if compareResult == False:
+            result['message']='Difference detected in global config: diff -yBw '+listen_address_old_config+' '+ args['listen_address']
+            return True
+        else:
+            result['message'] = 'Config is identical, no need to register or update'
+            return False
+
+    except Exception, err:
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno), **result)
+
 
 # comparing the extracted conf with the new conf created by gitlab-runner
 def compare_config(args):
@@ -132,7 +164,8 @@ def compare_config(args):
             import fileinput
             for line in fileinput.input(args['config'],inplace =1):
                 line = line.strip()
-                if not 'concurrent =' in line and not 'check_interval =' in line :
+                #todo refactor
+                if not 'concurrent =' in line and not 'check_interval =' in line and not 'listen_address =' in line :
                     print line
 
             #we unregister immediatly the new runner created for the test
@@ -194,6 +227,36 @@ def getRunnerToken(name, configFile):
             token = re.search('Token.*=(.*) URL',line, re.MULTILINE).group(1)
             return token
     return False
+
+def writeOutListenAddress(address, port):
+    "".join("listen_address = ",address,":", port)
+
+def set_runner_listen_adress(args, configFile='/etc/gitlab-runner/config.toml'):
+    try:
+        inFile = open(configFile)
+        outFileName = '/tmp/extracted-config' + str(uuid.uuid4()) + '.tmp'
+        outFile = open(outFileName,'w')
+
+        for line in inFile:
+
+            m = re.search('listen_address = \"([0-9,\.]*:[0-9]{4})\"', inFile ,re.MULTILINE)
+            if m :
+                outFile.write(writeOutListenAddress(args['address'], args['port']))
+            else :
+                outFile.write("".join(line))
+        #
+        # m = re.search('listen_address = \"([0-9,\.]*:[0-9]{4})\"', inFile ,re.MULTILINE)
+        # if m :
+        #     listen_address_old_config = m.group(0)
+        #
+        # compareResult = (listen_address_old_config == args['listen_address'])
+
+        outFile.close()
+        inFile.close()
+
+    except Exception, err:
+        result['original_message'] = "Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno)
+        module.fail_json(msg="Exception "+ type(err).__name__ + str(err) + " at line " + format(sys.exc_info()[-1].tb_lineno),**result)
 
 def runner_register_docker(args, configFile='/etc/gitlab-runner/config.toml'):
     try:
@@ -282,8 +345,12 @@ def run_module():
             result['changed'] = False
             result['message']= "No differences detected, nothing to do"
     elif module.params['command'] == 'unregister':
-        runner_unregister(module.params)
-    
+        if compare_listen_adress_config(module.params):
+            runner_unregister(module.params)
+    elif module.params['command'] == 'listen_address' :
+        if compare_listen_adress_config(module.params):
+            set_runner_listen_adress(module.params)
+
     module.exit_json(**result)
 
 def main():
